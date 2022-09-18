@@ -1,6 +1,5 @@
 package main
 
-import "C"
 import (
 	"bufio"
 	"encoding/binary"
@@ -14,6 +13,7 @@ import (
 )
 
 func main() {
+	// 编译x32的设置GOARCH=386 & binaryPath := "HadesSvc.exe"
 	binaryPath := "HadesSvc64.exe"
 	args := []string{""}
 
@@ -83,7 +83,7 @@ func main() {
 
 	// 内核采集关闭
 	var buf3 = make([]byte, 4+size)
-	task.DataType = 402
+	task.DataType = 404
 	if _, err = task.MarshalToSizedBuffer(buf3[4:]); err != nil {
 		return
 	}
