@@ -131,16 +131,6 @@ func (d *EbpfDecoder) DecodeUint16BigEndian(msg *uint16) error {
 	return nil
 }
 
-func (d *EbpfDecoder) DecodeUint16LittleEndian(msg *uint16) error {
-	offset := d.cursor
-	if len(d.buffer[offset:]) < sizeint16 {
-		return fmt.Errorf("read uint16BE failed, offset: %d", offset)
-	}
-	*msg = binary.LittleEndian.Uint16(d.buffer[offset : offset+sizeint16])
-	d.cursor += sizeint16
-	return nil
-}
-
 func (d *EbpfDecoder) DecodeInt32(msg *int32) error {
 	readAmount := 4
 	offset := d.cursor
@@ -413,9 +403,6 @@ func (d *EbpfDecoder) decodeStr(size uint32) (str string, err error) {
 
 // perf non-related fields
 func (d *EbpfDecoder) DecodeUint32Ip(in uint32) string {
-	if in == 0 {
-		return invalid
-	}
 	ip := make(net.IP, net.IPv4len)
 	binary.BigEndian.PutUint32(ip, in)
 	return ip.String()

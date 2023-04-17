@@ -12,6 +12,12 @@ Hades 是一个基于 eBPF 的主机入侵检测系统，同时兼容低版本�
 
 申明：本项目借鉴了 [Tracee](https://github.com/aquasecurity/tracee) 以及 [Elkeid](https://github.com/bytedance/Elkeid) 中的代码以及思路等
 
+## 概览
+
+> 现在仍是一个demo后台，后续会持续迭代
+
+<img src="https://github.com/chriskaliX/Hades/blob/main/imgs/hades-platform.png"/>
+
 ## 架构
 
 > 注: Agent 部分基本参照 Elkeid 1.7 部分重构
@@ -35,11 +41,16 @@ Hades 是一个基于 eBPF 的主机入侵检测系统，同时兼容低版本�
 
 ## 采集能力
 
+---
+
 ### eBPF Driver
 
 > 支持 `21` 种 Hook，涵盖大部分安全审计检测需求，采集字段基本和 Elkeid 相同
 
 [Hook](https://github.com/chriskaliX/Hades/tree/main/plugins/ebpfdriver) 详情查看
+
+<details><summary> eBPF driver 插件 Hook 事件详情 </summary>
+<p>
 
 | Hook                                       | Status & Description                  | ID   |
 | :----------------------------------------- | :------------------------------------ | :--- |
@@ -65,23 +76,49 @@ Hades 是一个基于 eBPF 的主机入侵检测系统，同时兼容低版本�
 | uprobe/trigger_module_scan                 | ON                                    | 1203 |
 | kprobe/security_bpf                        | ON                                    | 1204 |
 
+</p></details>
+
+---
+
 ### Collector
 
-> S 代表异步采集，P 代表周期采集
+> S 代表异步采集，P 代表周期采集，C 代表触发采集
 
-|   Event   | Type |
-| :-------: | :--: |
-|  crontab  |  P   |
-| processes |  P   |
-|  socket   |  P   |
-| sshconfig |  P   |
-| ssh login |  S   |
-|   user    |  P   |
-|    yum    |  P   |
+<details><summary> collector 插件 hook 详情 </summary>
+<p>
+
+|   Event   | Type |  ID  |
+| :-------: | :--: |  :-: |
+| processes |  P   | 1001 |
+|  crontab  |  P   | 2001 |
+|sshdconfig |  P   | 3002 |
+| ssh login |  S   | 3003 |
+|   user    |  P   | 3004 |
+| sshconfig |  P   | 3005 |
+|    yum    |  P   | 3006 |
+|host detect|  C   | 3007 |
+|    apps   |  P   | 3008 |
+|    kmod   |  P   | 3009 |
+|    disk   |  P   | 3010 |
+|  systemd  |  P   | 3011 |
+| interface |  P   | 3012 |
+|  iptable  |  P   | 3013 |
+|bpf_program|  P   | 3014 |
+|    jar    |  P   | 3015 |
+|   dpkg    |  P   | 3016 |
+|    rpm    |  P   | 3017 |
+| container |  P   | 3018 |
+|  socket   |  P   | 5001 |
+
+</p></details>
 
 ### NCP
 
+---
+
 > Netlink CN_PROC 事件采集
+
+___
 
 ## 联系 & 交流
 

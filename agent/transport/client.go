@@ -17,11 +17,9 @@ import (
 func Startup(ctx context.Context, wg *sync.WaitGroup) {
 	var client proto.Transfer_TransferClient
 	defer wg.Done()
+	defer zap.S().Info("grpc deamon exits")
 	zap.S().Info("grpc transport starts")
-	// Wait group for this goroutine
 	subWg := &sync.WaitGroup{}
-	defer subWg.Wait()
-	// start the loop of connecting
 	for {
 		select {
 		case <-ctx.Done():
@@ -36,9 +34,8 @@ func Startup(ctx context.Context, wg *sync.WaitGroup) {
 			subCtx, cancel := context.WithCancel(ctx)
 			if client, err = proto.NewTransferClient(conn).
 				Transfer(subCtx, grpc.UseCompressor("snappy")); err != nil {
-				zap.S().Error(err)
+				zap.S().Errorf("grpc transfer failed: %s", err.Error())
 				cancel()
-				time.Sleep(5 * time.Second)
 				continue
 			}
 			// client start successfully, start the goroutines and wait
@@ -48,11 +45,9 @@ func Startup(ctx context.Context, wg *sync.WaitGroup) {
 				handleReceive(subCtx, subWg, client)
 				cancel()
 			}()
-			// stuck here
 			subWg.Wait()
 			cancel()
-			zap.S().Info("transfer has been canceled, wait next try to transfer for 5 seconds")
-			time.Sleep(5 * time.Second)
+			zap.S().Info("transfer has been canceled, start to reconnect")
 		}
 	}
 }
@@ -62,7 +57,7 @@ func handleSend(ctx context.Context, wg *sync.WaitGroup, c proto.Transfer_Transf
 	defer wg.Done()
 	defer zap.S().Info("send handler is exited")
 	defer c.CloseSend()
-	zap.S().Info("send handler is running")
+	zap.S().Info("send handler starts")
 	ticker := time.NewTicker(time.Millisecond * 100)
 	defer ticker.Stop()
 	for {
@@ -70,7 +65,9 @@ func handleSend(ctx context.Context, wg *sync.WaitGroup, c proto.Transfer_Transf
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			DefaultTrans.Send(c)
+			if err := Trans.Send(c); err != nil {
+				zap.S().Errorf("handle send failed: %s", err.Error())
+			}
 		}
 	}
 }
@@ -78,15 +75,14 @@ func handleSend(ctx context.Context, wg *sync.WaitGroup, c proto.Transfer_Transf
 func handleReceive(ctx context.Context, wg *sync.WaitGroup, client proto.Transfer_TransferClient) {
 	defer wg.Done()
 	defer zap.S().Info("handle receive is exited")
-	zap.S().Info("handle receive is running")
+	zap.S().Info("handle receive starts")
 	for {
 		select {
 		case <-ctx.Done():
-			zap.S().Error("handle receive exit since ctx.Done")
 			return
 		default:
-			if err := DefaultTrans.Receive(client); err != nil {
-				zap.S().Error(err)
+			if err := Trans.Receive(client); err != nil {
+				zap.S().Errorf("handle receive failed: %s", err.Error())
 				return
 			}
 		}

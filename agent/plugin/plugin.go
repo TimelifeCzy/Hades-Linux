@@ -4,6 +4,7 @@ import (
 	"agent/agent"
 	"agent/transport"
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/chriskaliX/SDK/transport/protocol"
@@ -12,54 +13,48 @@ import (
 
 func Startup(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
+	defer zap.S().Info("plugin deamon exits")
+	zap.S().Info("plugin deamon starts")
 	for {
 		select {
 		case <-ctx.Done():
-			DefaultManager.UnregisterAll()
 			return
-		case cfgs := <-DefaultManager.syncCh:
+		// Task 处理
+		case task := <-transport.PluginTaskChan:
+			plg, ok := PluginManager.Get(task.ObjectName)
+			if !ok {
+				transport.TaskError(task.Token, fmt.Sprintf("can't find plugin %s", task.ObjectName))
+				continue
+			}
+			if err := plg.SendTask((protocol.Task)(*task)); err != nil {
+				transport.TaskError(task.Token, fmt.Sprintf("send task to plugin: %s", err.Error()))
+			} else {
+				transport.TaskSuccess(task.Token, "")
+			}
+		// Config 处理
+		case cfgs := <-transport.PluginConfigChan:
 			// 加载插件
 			for _, cfg := range cfgs {
 				if cfg.Name == agent.Product {
 					continue
 				}
-				if err := DefaultManager.Load(ctx, *cfg); err != nil {
-					zap.S().Error(err)
+				if err := PluginManager.Load(ctx, *cfg); err != nil && err != ErrIgnore {
+					zap.S().Errorf("plugin %s load failed: %s", cfg.Name, err.Error())
 				} else {
-					zap.S().Infof("plugin %s has been loaded", cfg.Name)
+					zap.S().Infof("plugin %s is loaded successfully", cfg.Name)
 				}
 			}
 			// 移除插件
-			for _, plg := range DefaultManager.GetAll() {
+			for _, plg := range PluginManager.GetAll() {
 				if _, ok := cfgs[plg.Name()]; ok {
 					continue
 				}
-				if err := DefaultManager.UnRegister(plg.Name()); err != nil {
-					zap.S().Error(err)
+				if err := PluginManager.unRegist(plg.Name()); err != nil {
+					zap.S().Errorf("plugin %s remove failed: %s", plg.Name(), err.Error())
+				} else {
+					zap.S().Infof("plugin %s is removed", plg.Name())
 				}
 			}
 		}
 	}
-}
-
-func init() {
-	go func() {
-		for {
-			select {
-			case task := <-transport.PluginTaskChan:
-				// In future, shutdown, update, restart will be in here
-				if plg, ok := DefaultManager.Get(task.GetObjectName()); ok {
-					if err := plg.SendTask((protocol.Task)(*task)); err != nil {
-						zap.S().Error("send task to plugin: ", err)
-					}
-				} else {
-					zap.S().Error("can't find plugin: ", task.GetObjectName())
-				}
-			case cfgs := <-transport.PluginConfigChan:
-				if err := DefaultManager.Sync(cfgs); err != nil {
-					zap.S().Error("config sync failed: ", err)
-				}
-			}
-		}
-	}()
 }

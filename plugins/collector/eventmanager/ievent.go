@@ -1,7 +1,7 @@
 package eventmanager
 
 import (
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/chriskaliX/SDK"
@@ -9,41 +9,27 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	Snapshot = iota
-	Differential
-	None
-)
+type EventMode int
 
 const (
-	Realtime = iota // Real time events like inotify or netlink
+	Realtime EventMode = iota // Real time events like inotify or netlink
 	Periodic
+	Trigger
 )
 
-const (
-	Stop  = 0
-	Start = 1
-)
-
-type Mode int
+var EmptyDuration = 0 * time.Second
 
 type Event struct {
 	event    IEvent
 	interval time.Duration
-	mode     int
 	done     chan struct{}
 	sig      chan struct{}
 	id       cron.EntryID
 }
 
 func (e *Event) Start(s SDK.ISandbox) (err error) {
-	// skip Stop status
-	if e.interval == Stop {
-		e.done <- struct{}{}
-		return
-	}
 	select {
-	case <-s.Context().Done():
+	case <-s.Done():
 		return
 	case <-e.done:
 		err = e.event.Run(s, e.sig)
@@ -58,8 +44,8 @@ func (e *Event) Start(s SDK.ISandbox) (err error) {
 }
 
 func (e *Event) Stop(c *cron.Cron) error {
-	zap.S().Info(e.event.Name() + " calls stop")
-	switch e.interval {
+	zap.S().Infof("stop %s is called", e.event.Name())
+	switch e.event.Flag() {
 	case Realtime:
 		// send terminate sig to construct
 		e.sig <- struct{}{}
@@ -70,15 +56,14 @@ func (e *Event) Stop(c *cron.Cron) error {
 			case <-e.done:
 				goto Success
 			case <-timer.C:
-				return errors.New("stop timeout")
+				return fmt.Errorf("%s stop timeout", e.event.Name())
 			}
 		}
 	default:
 		c.Remove(e.id)
 	}
 Success:
-	zap.S().Info(e.event.Name() + "is stop")
-	e.interval = Stop
+	zap.S().Infof("%s is stop", e.event.Name())
 	return nil
 }
 
@@ -86,5 +71,6 @@ type IEvent interface {
 	Name() string
 	DataType() int
 	Run(SDK.ISandbox, chan struct{}) error
-	Flag() int // return Realtime or Periodic
+	Flag() EventMode
+	Immediately() bool
 }

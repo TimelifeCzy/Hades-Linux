@@ -4,9 +4,11 @@ import (
 	"collector/event"
 	"collector/eventmanager"
 	"flag"
-	_ "net/http/pprof"
 	"runtime"
+	"runtime/debug"
 	"time"
+
+	_ "net/http/pprof"
 
 	"github.com/chriskaliX/SDK"
 	"github.com/chriskaliX/SDK/logger"
@@ -18,7 +20,10 @@ func init() {
 	if n > 4 {
 		n = 4
 	}
+	// set memorylimit to 50M
+	debug.SetMemoryLimit(50 * 1024 * 1024)
 	runtime.GOMAXPROCS(n)
+	SDK.RuntimeOpt()
 }
 
 func main() {
@@ -31,7 +36,7 @@ func main() {
 		Name:  "collector",
 		LogConfig: &logger.Config{
 			Path:        "collector.log",
-			MaxSize:     10,
+			MaxSize:     1,
 			MaxBackups:  10,
 			Compress:    true,
 			FileLevel:   zapcore.InfoLevel,
@@ -39,20 +44,23 @@ func main() {
 		},
 	}
 	// sandbox init
-	sandbox := SDK.NewSandbox()
-	if err := sandbox.Init(sconfig); err != nil {
-		return
-	}
+	sandbox := SDK.NewSandbox(sconfig)
 	em := eventmanager.New(sandbox)
-	// Add events
-	em.AddEvent(&event.Crontab{}, eventmanager.Start, eventmanager.None)
-	em.AddEvent(&event.Process{}, 15*time.Minute, eventmanager.Snapshot)
-	em.AddEvent(&event.Socket{}, 10*time.Minute, eventmanager.Snapshot)
-	em.AddEvent(&event.SSH{}, eventmanager.Start, eventmanager.None)
-	em.AddEvent(&event.SshConfig{}, 30*time.Minute, eventmanager.Snapshot)
-	em.AddEvent(&event.Sshd{}, 30*time.Minute, eventmanager.Snapshot)
-	em.AddEvent(&event.User{}, 10*time.Minute, eventmanager.Snapshot)
-	em.AddEvent(&event.User{}, 10*time.Minute, eventmanager.Snapshot)
-
-	sandbox.Run(em.Run)
+	em.AddEvent(&event.SSH{}, eventmanager.EmptyDuration)
+	em.AddEvent(&event.CronWatcher{}, eventmanager.EmptyDuration)
+	em.AddEvent(&event.Container{}, 5*time.Minute)
+	em.AddEvent(&event.User{}, 10*time.Minute)
+	em.AddEvent(&event.Process{}, 15*time.Minute)
+	em.AddEvent(&event.Crontab{}, 24*time.Hour)
+	// system configuration
+	em.AddEvent(&event.Configs{}, 6*time.Hour)
+	// system-related
+	event.RegistSystem(em)
+	// networks
+	event.RegistNetwork(em)
+	// applications
+	em.AddEvent(&event.Application{}, 24*time.Hour)
+	// libraries (jar / dpkg / rpm / yum)
+	em.AddEvent(&event.Libraries{}, 24*time.Hour)
+	sandbox.Run(em.Schedule)
 }

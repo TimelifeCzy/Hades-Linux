@@ -15,10 +15,10 @@ import (
 )
 
 type Process struct {
-	CgroupId int    `json:"cgroupid,omitempty"`
 	Pns      int    `json:"pns"`
 	RootPns  int    `json:"root_pns"`
 	PID      int    `json:"pid"`
+	GID      int    `json:"gid"`
 	PGID     int    `json:"pgid"`
 	PgidArgv string `json:"pgid_argv,omitempty"`
 	TID      int    `json:"tid,omitempty"`
@@ -40,7 +40,7 @@ type Process struct {
 
 	TTY        int     `json:"tty,omitempty"`
 	TTYName    string  `json:"ttyname,omitempty"`
-	StartTime  uint64  `json:"starttime,omitempty"`
+	StartTime  uint64  `json:"start_time,omitempty"`
 	RemoteAddr string  `json:"remoteaddr,omitempty"`
 	RemotePort string  `json:"remoteport,omitempty"`
 	LocalAddr  string  `json:"localaddr,omitempty"`
@@ -52,34 +52,13 @@ type Process struct {
 	Cpu        float64 `json:"cpu,omitempty"`
 }
 
-func (p *Process) reset() {
-	p.CgroupId = 0
-	p.Pns = 0
-	p.RootPns = cache.RootPns
-	p.PID = 0
-	p.TID = 0
-	p.PPID = 0
-	p.Name = ""
-	p.Argv = ""
-	p.Exe = ""
-	p.Hash = ""
-	p.UID = 0
-	p.Username = ""
-	p.Cwd = ""
-	p.Session = 0
-	p.Stdin = ""
-	p.Stdout = ""
-	p.PidTree = ""
-	p.NodeName = ""
-}
-
 // In promthues/procfs, it returns out that in every disros that they researched, USER_HZ
 // is actually hardcoded to 100 on all Go-supported platforms. See the reference here:
 // https://github.com/prometheus/procfs/blob/116b5c4f80ab09a0a6a848a7606652821b90d065/proc_stat.go
 // https://github.com/mneverov/CPUStat
 // the author claims that it is safe to hardcode this to 100
 const userHz = 100
-const maxCmdline = 256
+const maxCmdline = 8 * 1024 // Large since java cmdline is loooog
 
 // internal system related variables
 var bootTime = uint64(0)
@@ -121,20 +100,28 @@ func (p *Process) GetCmdline() (err error) {
 	return
 }
 
+func (p *Process) Fds() (result []string, err error) {
+	return GetFds(p.PID)
+}
+
 // The one and only real function of get cmdline, cache will be filled automatically
 func getCmdline(pid int) (cmdline string, err error) {
-	var res []byte
-	if res, err = os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline"); err != nil {
-		return
-	}
-	if len(res) == 0 {
-		return
-	}
-	res = bytes.ReplaceAll(res, []byte{0}, []byte{' '})
-	res = bytes.TrimSpace(res)
-	cmdline = string(res)
-	if len(cmdline) > maxCmdline {
-		cmdline = cmdline[:maxCmdline]
+	if pid == 1<<32-1 {
+		cmdline = "-1"
+	} else {
+		var res []byte
+		if res, err = os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline"); err != nil {
+			return
+		}
+		if len(res) == 0 {
+			return
+		}
+		res = bytes.ReplaceAll(res, []byte{0}, []byte{' '})
+		res = bytes.TrimSpace(res)
+		cmdline = string(res)
+		if len(cmdline) > maxCmdline {
+			cmdline = cmdline[:maxCmdline]
+		}
 	}
 	ArgvCache.Add(pid, cmdline)
 	return
@@ -170,17 +157,6 @@ func (p *Process) GetNs() error {
 	return nil
 }
 
-func (p *Process) GetCgroup() (err error) {
-	cgroupId, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/cgroup", p.PID))
-	if err != nil {
-		return err
-	}
-	if len(cgroupId) >= 9 {
-		p.CgroupId, _ = strconv.Atoi(cgroupId[8 : len(cgroupId)-1])
-	}
-	return nil
-}
-
 func (p *Process) GetEnv() {
 	p.PodName, p.NodeName = ns.Cache.Get(uint32(p.PID), uint32(p.Pns))
 }
@@ -200,7 +176,7 @@ func (p *Process) GetStat(simple bool) (err error) {
 		p.Name = string(fields[1][1 : len(fields[1])-1])
 	}
 	p.PPID, _ = strconv.Atoi(fields[3])
-	p.PGID, _ = strconv.Atoi(fields[3])
+	p.PGID, _ = strconv.Atoi(fields[7])
 	p.Session, _ = strconv.Atoi(fields[5])
 	p.TTY, _ = strconv.Atoi(fields[6])
 	if simple {
@@ -226,6 +202,13 @@ func (p *Process) GetStat(simple bool) (err error) {
 	p.Cpu = (float64((p.Utime + p.Stime + iotime)) / float64(sysTime)) * float64(nproc)
 	p.Cpu, _ = strconv.ParseFloat(fmt.Sprintf("%.6f", p.Cpu), 64)
 	return
+}
+
+func (p *Process) IsContainer() bool {
+	if p.Pns == 0 {
+		return false
+	}
+	return p.Pns != cache.RootPns
 }
 
 func init() {

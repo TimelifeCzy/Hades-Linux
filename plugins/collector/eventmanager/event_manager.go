@@ -32,36 +32,47 @@ func New(s *SDK.Sandbox) *EventManager {
 	}
 }
 
-func (e *EventManager) AddEvent(event IEvent, t time.Duration, m int) {
-	zap.S().Info(fmt.Sprintf("%s is added, %dm, %d", event.Name(), int(t.Minutes()), m))
+func (e *EventManager) AddEvent(event IEvent, t time.Duration) {
+	zap.S().Info(fmt.Sprintf("%s is added, duration: %dm, flag: %d", event.Name(), int(t.Minutes()), event.Flag()))
 	e.m[event.DataType()] = &Event{
 		event:    event,
 		interval: t,
-		mode:     m,
 		done:     make(chan struct{}, 1),
 		sig:      make(chan struct{}, 1),
 	}
 	e.m[event.DataType()].done <- struct{}{}
 }
 
-func (e *EventManager) Run(s SDK.ISandbox) error {
-	zap.S().Info("eventmanager running")
+// schedule the events
+func (e *EventManager) Schedule(s SDK.ISandbox) error {
+	// run and wait the immdiately firstly and skip the trigger mode
+	for _, event := range e.m {
+		if event.event.Immediately() && event.event.Flag() != Trigger {
+			zap.S().Infof("%s first run", event.event.Name())
+			event.Start(s)
+		}
+	}
+	// start the events
 	for _, event := range e.m {
 		switch event.event.Flag() {
 		case Realtime:
 			go event.Start(s)
-		default:
+		case Periodic:
 			go func(ev *Event) {
-				r := rand.Intn(600)
-				time.Sleep(time.Duration(r) * time.Second)
-				zap.S().Infof("%s first run", ev.event.Name())
-				ev.Start(s)
+				// immediately already run
+				if !ev.event.Immediately() {
+					time.Sleep(e.random(s.Debug()))
+					zap.S().Infof("%s first run", ev.event.Name())
+					ev.Start(s)
+				}
 				id, _ := e.cron.AddFunc(
 					fmt.Sprintf("@every %dm", int(ev.interval.Minutes())),
 					func() { ev.Start(s) },
 				)
 				ev.id = id
 			}(event)
+		case Trigger:
+			zap.S().Infof("%s start in trigger mode", event.event.Name())
 		}
 	}
 	go e.taskResolve()
@@ -69,8 +80,17 @@ func (e *EventManager) Run(s SDK.ISandbox) error {
 	return nil
 }
 
-// collector task resolve
-// only data_type and (an int interval)
+func (e *EventManager) random(debug bool) time.Duration {
+	var rint int
+	if debug {
+		rint = rand.Intn(10)
+	} else {
+		rint = rand.Intn(600)
+	}
+	return time.Duration(rint) * time.Second
+}
+
+// collector task resolve, only data_type and (an int interval)
 func (e *EventManager) taskResolve() {
 	for {
 		task := e.s.RecvTask()
@@ -81,26 +101,49 @@ func (e *EventManager) taskResolve() {
 		// look up events by data type
 		event, ok := e.m[int(task.DataType)]
 		if !ok {
-			zap.S().Error(fmt.Sprintf("%d is invalid", task.DataType))
-			continue
-		}
-		// All trigger by interval
-		interval, err := strconv.Atoi(task.Data)
-		if err != nil {
-			zap.S().Error(err)
+			zap.S().Errorf("%d is invalid", task.DataType)
 			continue
 		}
 
 		var data = &protocol.Record{
 			DataType:  5100,
 			Timestamp: time.Now().Unix(),
-			Data:      &protocol.Payload{},
+			Data: &protocol.Payload{
+				Fields: map[string]string{
+					"status": "success",
+					"msg":    "",
+					"token":  task.Token,
+				},
+			},
 		}
 
-		if interval > 0 {
-			if event.event.Flag() == Realtime {
-				go event.Start(e.s)
-			} else {
+		switch event.event.Flag() {
+		case Trigger:
+			timer := time.NewTimer(3 * time.Second)
+			defer timer.Stop()
+			for {
+				select {
+				case <-event.done:
+					go event.Start(e.s)
+					goto Send
+				case <-timer.C:
+					serr := fmt.Sprintf("%s job is running", event.event.Name())
+					zap.S().Error(serr)
+					data.Data.Fields = map[string]string{
+						"status": "failed",
+						"msg":    serr,
+					}
+					goto Send
+				}
+			}
+		case Periodic:
+			// All trigger by interval
+			interval, err := strconv.Atoi(task.Data)
+			if err != nil {
+				zap.S().Errorf("parse interval failed: %s", err.Error())
+				continue
+			}
+			if interval > 0 {
 				event.interval = time.Duration(interval) * time.Minute
 				e.cron.Remove(event.id)
 				id, _ := e.cron.AddFunc(
@@ -108,24 +151,37 @@ func (e *EventManager) taskResolve() {
 					func() { event.Start(e.s) },
 				)
 				event.id = id
+				goto Send
 			}
-		} else {
-			err := event.Stop(e.cron)
-			if err == nil {
+			if err := event.Stop(e.cron); err != nil {
+				serr := fmt.Sprintf("%s stop fail", event.event.Name())
+				zap.S().Errorf(serr)
 				data.Data.Fields = map[string]string{
-					"status": "successed",
-					"msg":    "",
-					"token":  task.Token,
+					"status": "fail",
+					"msg":    serr,
 				}
-			} else {
-				zap.S().Error(fmt.Sprintf("%s stop fail", event.event.Name()))
+			}
+		case Realtime:
+			// All trigger by interval
+			interval, err := strconv.Atoi(task.Data)
+			if err != nil {
+				zap.S().Errorf("parse interval failed: %s", err.Error())
+				continue
+			}
+			if interval > 0 {
+				go event.Start(e.s)
+				goto Send
+			}
+			if err := event.Stop(e.cron); err != nil {
+				serr := fmt.Sprintf("%s stop fail", event.event.Name())
+				zap.S().Error(serr)
 				data.Data.Fields = map[string]string{
 					"status": "failed",
-					"msg":    "stop failed",
-					"token":  task.Token,
+					"msg":    serr,
 				}
 			}
 		}
+	Send:
 		e.s.SendRecord(data)
 	}
 }

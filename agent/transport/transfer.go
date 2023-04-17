@@ -20,6 +20,7 @@ var (
 	ErrAgentDataType  = errors.New("agent datatype is not support")
 )
 
+// The channel to dispatch to plugin
 var (
 	PluginTaskChan   = make(chan *proto.Task)
 	PluginConfigChan = make(chan map[string]*proto.Config)
@@ -27,7 +28,7 @@ var (
 
 const size = 8186 // remain 6 space for importance, always available
 
-var DefaultTrans = New()
+var Trans = NewTransfer()
 
 type Transfer struct {
 	mu         sync.Mutex
@@ -38,7 +39,7 @@ type Transfer struct {
 	updateTime time.Time
 }
 
-func New() *Transfer {
+func NewTransfer() *Transfer {
 	return &Transfer{
 		buf:        [8192]*proto.Record{},
 		updateTime: time.Now(),
@@ -62,20 +63,9 @@ func (t *Transfer) Transmission(rec *proto.Record, important bool) (err error) {
 	return
 }
 
+// TransmissionSDK is an wrapper to satisfy the SDK interface
 func (t *Transfer) TransmissionSDK(rec protocol.ProtoType, important bool) (err error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.offset >= size {
-		if important && t.offset < len(t.buf) {
-			t.buf[t.offset] = rec.(*proto.Record)
-			t.offset++
-		}
-		err = ErrBufferOverflow
-		return
-	}
-	t.buf[t.offset] = rec.(*proto.Record)
-	t.offset++
-	return
+	return t.Transmission(rec.(*proto.Record), important)
 }
 
 // Send the record from buffer
@@ -90,7 +80,6 @@ func (t *Transfer) Send(client proto.Transfer_TransferClient) (err error) {
 	copy(recs, t.buf[:t.offset]) // copy, for reference
 	t.offset = 0
 	t.mu.Unlock()
-	// Send the copy
 	if err = client.Send(&proto.PackagedData{
 		Records:      recs,
 		AgentId:      agent.ID,
@@ -101,9 +90,7 @@ func (t *Transfer) Send(client proto.Transfer_TransferClient) (err error) {
 		Hostname:     agent.Hostname.Load().(string),
 		Version:      agent.Version,
 		Product:      agent.Product,
-	}); err != nil {
-		zap.S().Error(err)
-	} else {
+	}); err == nil {
 		atomic.AddUint64(&t.txCnt, uint64(len(recs)))
 	}
 	for _, rec := range recs {
@@ -115,6 +102,10 @@ func (t *Transfer) Send(client proto.Transfer_TransferClient) (err error) {
 func (t *Transfer) Receive(client proto.Transfer_TransferClient) (err error) {
 	cmd, err := client.Recv()
 	if err != nil {
+		return
+	}
+	// precheck cmd
+	if cmd == nil {
 		return
 	}
 	zap.S().Info("command received")
@@ -137,7 +128,7 @@ func (t *Transfer) GetState(now time.Time) (txTPS, rxTPS float64) {
 }
 
 func (t *Transfer) resolveConfig(cmd *proto.Command) (err error) {
-	if cmd == nil || cmd.Configs == nil {
+	if cmd.Configs == nil {
 		return
 	}
 	configs := map[string]*proto.Config{}
@@ -145,40 +136,79 @@ func (t *Transfer) resolveConfig(cmd *proto.Command) (err error) {
 		configs[config.Name] = config
 	}
 	if config, ok := configs[agent.Product]; ok && config.Version != agent.Version {
-		zap.S().Infof("agent will update:current version %v -> expected version %v", agent.Version, config.Version)
+		zap.S().Infof("agent will update from version %v to version %v", agent.Version, config.Version)
 		if err = agent.Update(*config); err == nil {
 			zap.S().Info("agent update successfully")
 			agent.Cancel()
 			return
 		}
-		zap.S().Error("agent update failed:", err)
-		agent.SetAbnormal(fmt.Sprintf("agent update failed: %s", err))
+		zap.S().Errorf("agent update failed: %s", err.Error())
+		agent.SetAbnormal(fmt.Sprintf("agent update failed: %s", err.Error()))
 	}
 	delete(configs, agent.Product)
-	PluginConfigChan <- configs
+	select {
+	case PluginConfigChan <- configs:
+	default:
+		err = fmt.Errorf("plugin configchan is syncing or is cancelled")
+		zap.S().Error(err.Error())
+	}
 	return
 }
 
 func (t *Transfer) resolveTask(cmd *proto.Command) (err error) {
-	// resolve task by it's name
-	if cmd == nil || cmd.Task == nil {
+	if cmd.Task == nil {
 		return
 	}
-	switch cmd.Task.ObjectName {
-	case agent.Product:
+	if cmd.Task.ObjectName == agent.Product {
 		switch cmd.Task.DataType {
-		case config.TaskShutdown:
+		// according to the service, restart will be 45 secs in systemd based daemon
+		// crontab is used in sysvinit to keep the agent always available
+		case config.TaskShutdown, config.TaskRestart:
 			zap.S().Info("agent shutdown is called")
+			TaskSuccess(cmd.Task.Token, "agent shutdown is called")
 			agent.Cancel()
 			return
-		case config.TaskRestart:
 		case config.TaskSetenv:
 		default:
-			zap.S().Error("resolveTask Agent DataType not supported: ", cmd.Task.DataType)
+			TaskError(cmd.Task.Token, fmt.Sprintf("agent datatype %d is not supported", cmd.Task.DataType))
 			return ErrAgentDataType
 		}
+	}
+	select {
+	case PluginTaskChan <- cmd.Task:
 	default:
-		PluginTaskChan <- cmd.Task
+		err = fmt.Errorf("plugin taskchan is syncing or is cancelled")
+		TaskError(cmd.Task.Token, err.Error())
 	}
 	return
+}
+
+func TaskSuccess(token string, msg string) {
+	zap.S().Info(token, msg)
+	Trans.Transmission(&proto.Record{
+		DataType:  5100,
+		Timestamp: time.Now().Unix(),
+		Data: &proto.Payload{
+			Fields: map[string]string{
+				"token":  token,
+				"msg":    msg,
+				"status": "success",
+			},
+		},
+	}, true)
+}
+
+func TaskError(token string, msg string) {
+	zap.S().Error(token, msg)
+	Trans.Transmission(&proto.Record{
+		DataType:  5100,
+		Timestamp: time.Now().Unix(),
+		Data: &proto.Payload{
+			Fields: map[string]string{
+				"token":  token,
+				"msg":    msg,
+				"status": "fail",
+			},
+		},
+	}, true)
 }

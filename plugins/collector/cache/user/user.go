@@ -3,7 +3,6 @@ package user
 import (
 	"collector/utils"
 	"math/rand"
-	"net"
 	"os/user"
 	"strconv"
 	"time"
@@ -14,24 +13,31 @@ import (
 const userCacheSize = 2048
 
 type User struct {
-	Username      string `json:"username"`
-	Password      string `json:"password"`
-	UID           uint32 `json:"uid"`
-	GID           uint32 `json:"gid"`
-	GroupName     string `json:"group_name"`
-	Info          string `json:"info"`
-	HomeDir       string `json:"home_dir"`
-	Shell         string `json:"shell"`
-	LastLoginTime uint64 `json:"last_login_time"`
-	LastLoginIP   net.IP `json:"last_login_ip"`
+	Username                 string `mapstructure:"username"`
+	Password                 string `mapstructure:"password"`
+	PasswordUpdateTime       string `mapstructure:"password_update_time"`
+	PasswordChangeInterval   string `mapstructure:"password_change_interval"`
+	PasswordValidity         string `mapstructure:"password_validity"`
+	PasswordWarnBeforeExpire string `mapstructure:"password_warn_before_expire"`
+	PasswordGracePeriod      string `mapstructure:"password_grace_period"`
+	UID                      string `mapstructure:"uid"`
+	GID                      string `mapstructure:"gid"`
+	GroupName                string `mapstructure:"group_name"`
+	Info                     string `mapstructure:"info"`
+	HomeDir                  string `mapstructure:"home_dir"`
+	Shell                    string `mapstructure:"shell"`
+	LastLoginTime            string `mapstructure:"last_login_time"`
+	LastLoginIP              string `mapstructure:"last_login_ip"`
 }
 
 var Cache = &UserCache{
-	cache: utilcache.NewLRUExpireCacheWithClock(userCacheSize, utils.Clock),
+	cache:     utilcache.NewLRUExpireCacheWithClock(userCacheSize, utils.Clock),
+	namecache: utilcache.NewLRUExpireCacheWithClock(userCacheSize, utils.Clock),
 }
 
 type UserCache struct {
-	cache *utilcache.LRUExpireCache
+	cache     *utilcache.LRUExpireCache
+	namecache *utilcache.LRUExpireCache
 }
 
 func (u *UserCache) GetUser(userid uint32) User {
@@ -46,10 +52,29 @@ func (u *UserCache) GetUser(userid uint32) User {
 		user := User{
 			Username: tmp.Username,
 			HomeDir:  tmp.HomeDir,
-			GID:      uint32(gid),
-			UID:      uint32(uid),
+			GID:      strconv.FormatInt(gid, 10),
+			UID:      strconv.FormatInt(uid, 10),
 		}
-		u.cache.Add(ustr, user, time.Minute*time.Duration(rand.Intn(60)+60))
+		u.Update(user)
+		return user
+	}
+	return User{}
+}
+
+func (u *UserCache) GetUserFromName(name string) User {
+	if _user, ok := u.namecache.Get(name); ok {
+		return _user.(User)
+	}
+	if tmp, err := user.Lookup(name); err == nil {
+		gid, _ := strconv.ParseInt(tmp.Gid, 10, 32)
+		uid, _ := strconv.ParseInt(tmp.Uid, 10, 32)
+		user := User{
+			Username: tmp.Username,
+			HomeDir:  tmp.HomeDir,
+			GID:      strconv.FormatInt(gid, 10),
+			UID:      strconv.FormatInt(uid, 10),
+		}
+		u.Update(user)
 		return user
 	}
 	return User{}
@@ -71,8 +96,8 @@ func (u *UserCache) GetUsers() (users []User) {
 }
 
 func (u *UserCache) Update(usr User) {
-	ustr := strconv.FormatUint(uint64(usr.UID), 10)
-	u.cache.Add(ustr, usr, time.Minute*time.Duration(rand.Intn(60)+60))
+	u.cache.Add(usr.UID, usr, time.Minute*time.Duration(rand.Intn(60)+60))
+	u.cache.Add(usr.Username, usr, time.Minute*time.Duration(rand.Intn(60)+60))
 }
 
 func init() {

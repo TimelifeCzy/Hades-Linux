@@ -3,8 +3,8 @@ package pool
 import (
 	"context"
 	"errors"
-	ds "hboat/datasource"
 	pb "hboat/grpc/transfer/proto"
+	"hboat/pkg/basic/mongo"
 	"sync"
 	"time"
 
@@ -56,7 +56,7 @@ func (g *GRPCPool) Delete(agentID string) {
 	g.connLock.Lock()
 	defer g.connLock.Unlock()
 	delete(g.connPool, agentID)
-	ds.StatusC.UpdateOne(context.Background(), bson.M{"agent_id": agentID},
+	mongo.StatusC.UpdateOne(context.Background(), bson.M{"agent_id": agentID},
 		bson.M{"$set": bson.M{"status": false}})
 }
 
@@ -72,13 +72,13 @@ func (g *GRPCPool) SendCommand(agentID string, command *pb.Command) (err error) 
 	if err != nil {
 		return err
 	}
-
+	// generate command
 	comm := &Command{
 		Command: command,
 		Error:   nil,
 		Ready:   make(chan bool, 1),
 	}
-
+	// send the command to the connection
 	select {
 	case conn.CommandChan <- comm:
 	case <-time.After(2 * time.Second):

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/chriskaliX/SDK/config"
-	"github.com/coreos/go-systemd/daemon"
 	"github.com/mitchellh/mapstructure"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/host"
@@ -30,7 +29,7 @@ var (
 	cpuLogicalNum   int
 	cpuMhz          string
 	cpuName         string
-	Memory          uint64
+	memory          uint64
 
 	bootTime uint64
 )
@@ -52,9 +51,10 @@ func init() {
 	cpuMhz = strconv.FormatFloat(mhz/1000, 'f', 1, 64)
 
 	if m, err := mem.VirtualMemory(); err == nil {
-		Memory = m.Total
+		memory = m.Total
 	}
 	bootTime, _ = host.BootTime()
+	arch, _ = host.KernelArch()
 
 	addMetric(&AgentMetric{})
 }
@@ -80,12 +80,12 @@ type AgentMetric struct {
 	WriteSpeed  string `mapstructure:"write_speed"`
 	TxSpeed     string `mapstructure:"tx_speed"`
 	RxSpeed     string `mapstructure:"rx_speed"`
-	FdCnt       string `mapstructure:"fd_cnt"`
+	Nfd         string `mapstructure:"nfd"`
 	StartAt     string `mapstructure:"start_at"`
 	TxTps       string `mapstructure:"tx_tps"`
 	RxTps       string `mapstructure:"rx_tps"`
 	Du          string `mapstructure:"du"`
-	Grs         string `mapstructure:"grs"`
+	Ngr         string `mapstructure:"ngr"`
 	Nproc       string `mapstructure:"nproc"`
 	State       string `mapstructure:"state"`
 	StateDetail string `mapstructure:"state_detail"`
@@ -115,29 +115,30 @@ func (m *AgentMetric) Flush(now time.Time) {
 	m.CpuLogicalNum = strconv.Itoa(cpuLogicalNum)
 	m.CpuMhz = cpuMhz
 	m.CpuName = cpuName
-	m.TotalMemory = strconv.FormatUint(Memory, 10)
+	m.TotalMemory = strconv.FormatUint(memory, 10)
 	m.BootTime = strconv.FormatUint(bootTime, 10)
 
 	pid := os.Getpid()
 	m.Pid = strconv.Itoa(pid)
-	if cpu, rss, rs, ws, fdCnt, startAt, err := getProcResource(pid); err == nil {
+	if cpu, rss, rs, ws, fds, startAt, err := getProcResource(pid); err == nil {
 		m.Cpu = strconv.FormatFloat(cpu, 'f', 8, 64)
 		m.ReadSpeed = strconv.FormatFloat(rs, 'f', 8, 64)
 		m.WriteSpeed = strconv.FormatFloat(ws, 'f', 8, 64)
 		m.Rss = strconv.FormatUint(rss, 10)
-		m.FdCnt = strconv.FormatInt(int64(fdCnt), 10)
+		m.Nfd = strconv.FormatInt(int64(fds), 10)
 		m.StartAt = strconv.FormatInt(startAt, 10)
 	} else {
-		zap.S().Error(err)
+		zap.S().Errorf("agent getProcResource failed: %s", err.Error())
 	}
+
 	s := connection.DefaultStatsHandler.GetStats(now)
 	m.RxSpeed = strconv.FormatFloat(s.RxSpeed, 'f', 8, 64)
 	m.TxSpeed = strconv.FormatFloat(s.TxSpeed, 'f', 8, 64)
-	txTPS, rxTPX := transport.DefaultTrans.GetState(now)
+	txTPS, rxTPX := transport.Trans.GetState(now)
 	m.TxTps = strconv.FormatFloat(txTPS, 'f', 8, 64)
 	m.RxTps = strconv.FormatFloat(rxTPX, 'f', 8, 64)
-	m.Du = strconv.FormatUint(getDirSize(agent.Workdir, "plugin"), 10)
-	m.Grs = strconv.Itoa(runtime.NumGoroutine())
+	m.Du = strconv.FormatUint(getDirSize(agent.Workdir, "plugin"), 10) // get only from plugin
+	m.Ngr = strconv.Itoa(runtime.NumGoroutine())
 	m.Nproc = strconv.Itoa(runtime.NumCPU())
 	m.State, m.StateDetail = agent.State()
 
@@ -154,18 +155,15 @@ func (m *AgentMetric) Flush(now time.Time) {
 			m.Load5 = strconv.FormatFloat(avg.Load5, 'f', 2, 64)
 			m.Load15 = strconv.FormatFloat(avg.Load15, 'f', 2, 64)
 		}
-		daemon.SdNotify(false, "WATCHDOG=1")
 	}
 
-	fields := make(map[string]string, 28)
-	if err := mapstructure.Decode(m, fields); err == nil {
-		rec := &proto.Record{
-			DataType:  config.DTPluginStatus,
-			Timestamp: now.Unix(),
-			Data: &proto.Payload{
-				Fields: fields,
-			},
-		}
-		transport.DefaultTrans.Transmission(rec, false)
+	rec := &proto.Record{
+		DataType:  config.DTAgentStatus,
+		Timestamp: now.Unix(),
+		Data: &proto.Payload{
+			Fields: make(map[string]string, 32),
+		},
 	}
+	mapstructure.Decode(m, &rec.Data.Fields)
+	transport.Trans.Transmission(rec, false)
 }

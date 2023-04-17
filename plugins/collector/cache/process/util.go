@@ -4,32 +4,35 @@ import (
 	"collector/cache/user"
 	"collector/utils"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/chriskaliX/SDK/utils/hash"
 )
 
 var HashCache = hash.NewWithClock(utils.Clock)
 
-func GetFds(pid int) ([]string, error) {
-	fds, err := os.ReadDir("/proc/" + strconv.Itoa(int(pid)) + "/fd")
+func GetFds(pid int) (result []string, err error) {
+	var f *os.File
+	f, err = os.Open(filepath.Join("/proc", strconv.Itoa(pid), "fd"))
 	if err != nil {
-		return nil, err
+		return
 	}
-	files := make([]string, 0, 4)
-	for index, fd := range fds {
-		// In some peticular situation, count of fd over 100k, limit for this
-		if index > 100 {
-			break
-		}
-		file, err := os.Readlink("/proc/" + strconv.Itoa(int(pid)) + "/fd/" + fd.Name())
+	defer f.Close()
+	var names []string
+	names, err = f.Readdirnames(1024)
+	if err != nil {
+		return
+	}
+	for _, name := range names {
+		res, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "fd", name))
 		if err != nil {
-			// skip error(better use for sockets)
 			continue
 		}
-		files = append(files, file)
+		result = append(result, strings.TrimSpace(res))
 	}
-	return files, nil
+	return
 }
 
 func getFd(pid int, index int) (string, error) {
@@ -65,7 +68,7 @@ func GetPids(limit int) (pids []int, err error) {
 
 // get single process information by it's pid
 func GetProcessInfo(pid int, simple bool) (proc *Process, err error) {
-	proc = Pool.Get()
+	proc = &Process{}
 	proc.PID = pid
 	if err = proc.GetStatus(); err != nil {
 		return
@@ -96,15 +99,25 @@ func GetProcessInfo(pid int, simple bool) (proc *Process, err error) {
 		return
 	}
 	if proc.UID >= 0 {
-		proc.Username = user.Cache.GetUsername(uint32(proc.UID))
+		u := user.Cache.GetUser(uint32(proc.UID))
+		proc.Username = u.Username
+		gid, _ := strconv.ParseInt(u.GID, 10, 32)
+		proc.GID = int(gid)
 	}
 	if ppid, ok := PidCache.Get(pid); ok {
 		proc.PPID = ppid.(int)
 	}
+	// ppid argv
 	if argv, ok := ArgvCache.Get(proc.PPID); ok {
 		proc.PpidArgv = argv.(string)
 	} else {
 		proc.PpidArgv, _ = getCmdline(proc.PPID)
+	}
+	// pgid argv
+	if argv, ok := ArgvCache.Get(proc.PGID); ok {
+		proc.PgidArgv = argv.(string)
+	} else {
+		proc.PgidArgv, _ = getCmdline(proc.PGID)
 	}
 
 	return proc, nil

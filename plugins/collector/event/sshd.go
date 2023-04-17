@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/chriskaliX/SDK"
 	"github.com/chriskaliX/SDK/transport/protocol"
 	"github.com/fsnotify/fsnotify"
@@ -35,9 +34,11 @@ func (SSH) Name() string {
 	return "ssh"
 }
 
-func (n *SSH) Flag() int {
+func (n *SSH) Flag() eventmanager.EventMode {
 	return eventmanager.Realtime
 }
+
+func (SSH) Immediately() bool { return false }
 
 // Get and parse SSH log
 // 2022-03-22: for now, performance is under improved.
@@ -80,6 +81,8 @@ func (SSH) Run(sandbox SDK.ISandbox, sig chan struct{}) (err error) {
 		zap.S().Error(err)
 		return
 	}
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
 	// only for write now, evaluate
 	for {
 		select {
@@ -88,7 +91,7 @@ func (SSH) Run(sandbox SDK.ISandbox, sig chan struct{}) (err error) {
 			case fsnotify.Write:
 				fs, err = os.Stat(event.Name)
 				if err != nil {
-					zap.S().Error(err)
+					zap.S().Errorf("stat file %s failed: %s", event.Name, err.Error())
 					return
 				}
 				// nothing to read
@@ -114,7 +117,7 @@ func (SSH) Run(sandbox SDK.ISandbox, sig chan struct{}) (err error) {
 					// 3. Invalid user - Failed Login
 					// enhanced with the port scanner
 					fields := strings.Fields(s.Text())
-					if len(fields) < 6 {
+					if len(fields) <= 6 {
 						continue
 					}
 					timeNow, err := time.Parse(time.Stamp, strings.Join(fields[:3], " "))
@@ -123,7 +126,6 @@ func (SSH) Run(sandbox SDK.ISandbox, sig chan struct{}) (err error) {
 					}
 					timeNow = timeNow.AddDate(time.Now().Year(), 0, 0)
 					sshlog := make(map[string]string, 5)
-					rawdata := make(map[string]string, 1)
 					// failed password
 					// Mar 22 00:21:51 localhost sshd[3246569]: Accepted password for root from xx.xx.xx.xx port 49186 ssh2
 					// Mar 22 00:21:29 localhost sshd[3246477]: Failed password for invalid user Craft from xx.xx.xx.xx port 44983 ssh2
@@ -134,54 +136,49 @@ func (SSH) Run(sandbox SDK.ISandbox, sig chan struct{}) (err error) {
 					case 14:
 						switch fields[5] {
 						case "Failed", "Accepted":
-							sshlog["reason"] = fields[5]
+							sshlog["reason"] = strings.ToLower(fields[5])
 						}
 						sshlog["timestamp"] = strconv.FormatInt(timeNow.Unix(), 10)
 						sshlog["username"] = fields[8]
 						sshlog["ip"] = fields[10]
 						sshlog["port"] = fields[12]
-						if data, err := sonic.Marshal(sshlog); err == nil {
-							rawdata["data"] = string(data)
-							rec := &protocol.Record{
-								DataType:  3003,
-								Timestamp: time.Now().Unix(),
-								Data: &protocol.Payload{
-									Fields: rawdata,
-								},
-							}
-							sandbox.SendRecord(rec)
+						rec := &protocol.Record{
+							DataType:  3003,
+							Timestamp: time.Now().Unix(),
+							Data: &protocol.Payload{
+								Fields: sshlog,
+							},
 						}
+						sandbox.SendRecord(rec)
 					// This is for the invalid user
 					case 16:
-						sshlog["reason"] = "Failed"
+						sshlog["reason"] = "failed"
 						sshlog["timestamp"] = strconv.FormatInt(timeNow.Unix(), 10)
 						sshlog["username"] = fields[10]
 						sshlog["ip"] = fields[12]
 						sshlog["port"] = fields[14]
-						if data, err := sonic.Marshal(sshlog); err == nil {
-							rawdata["data"] = string(data)
-							rec := &protocol.Record{
-								DataType:  3003,
-								Timestamp: time.Now().Unix(),
-								Data: &protocol.Payload{
-									Fields: rawdata,
-								},
-							}
-							sandbox.SendRecord(rec)
+						rec := &protocol.Record{
+							DataType:  3003,
+							Timestamp: time.Now().Unix(),
+							Data: &protocol.Payload{
+								Fields: sshlog,
+							},
 						}
+						sandbox.SendRecord(rec)
 					}
 				}
 				// before we exit
 				lastSize = fs.Size()
 			}
 		case err = <-watcher.Errors:
-			zap.S().Error(err)
+			zap.S().Errorf("ssh watcher failed: %s", err.Error())
 			return
-		case <-sandbox.Context().Done():
+		case <-sandbox.Done():
 			return
 		case <-sig:
 			return
-		case <-time.After(10 * time.Second):
+		case <-timer.C:
+			timer.Reset(10 * time.Second)
 		}
 	}
 }

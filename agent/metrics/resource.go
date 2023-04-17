@@ -10,7 +10,8 @@ import (
 )
 
 var (
-	ioCache = lru.New(128)
+	ioCache   = lru.New(128)
+	procCache = lru.New(100)
 )
 
 type ioState struct {
@@ -19,16 +20,17 @@ type ioState struct {
 	WriteBytes uint64
 }
 
-func getProcResource(pid int) (
-	cpu float64,
-	rss uint64,
-	readSpeed, writeSpeed float64,
-	fds int32,
-	startAt int64, err error) {
+func getProcResource(pid int) (cpu float64, rss uint64, readSpeed, writeSpeed float64, fds int32, startAt int64, err error) {
 	var p *process.Process
-	p, err = process.NewProcess(int32(pid))
-	if err != nil {
-		return
+	// sync from Elkeid to fix the cpu error, since cpu need to be count from lasttime
+	if iface, ok := procCache.Get(pid); ok {
+		p = iface.(*process.Process)
+	} else {
+		p, err = process.NewProcess(int32(pid))
+		if err != nil {
+			return
+		}
+		procCache.Add(pid, p)
 	}
 	cpu, _ = p.Percent(0)
 	cpu = cpu / 100.0
