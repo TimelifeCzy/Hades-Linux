@@ -6,15 +6,15 @@ import (
 	"strconv"
 )
 
-type NetInterface struct{}
+type SystemdUnit struct{}
 
-var _ Event = (*NetInterface)(nil)
+var _ Event = (*SystemdUnit)(nil)
 
-func (c *NetInterface) ID() int32 { return 3012 }
+func (c *SystemdUnit) ID() int32 { return 3011 }
 
-func (c *NetInterface) Name() string { return "net_interfaces" }
+func (c *SystemdUnit) Name() string { return "systemd_unit" }
 
-func (c *NetInterface) Handle(m map[string]string, req *pb.RawData, conn *pool.Connection) error {
+func (c *SystemdUnit) Handle(m map[string]string, req *pb.RawData, conn *pool.Connection) error {
 	mapper := make(map[string]interface{})
 	// handle the data
 	for k, v := range m {
@@ -30,4 +30,4 @@ func (c *NetInterface) Handle(m map[string]string, req *pb.RawData, conn *pool.C
 	return nil
 }
 
-func init() { RegistEvent(&NetInterface{}) }
+func init() { RegistEvent(&SystemdUnit{}) }
