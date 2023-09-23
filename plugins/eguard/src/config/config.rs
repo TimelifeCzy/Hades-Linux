@@ -1,22 +1,23 @@
 mod eguard_skel {
     include!("../bpf/eguard.skel.rs");
 }
-use plain::Plain;
-use serde::{Deserialize, Serialize};
-use anyhow::Result;
-use libc::{IPPROTO_TCP, IPPROTO_UDP};
-use crate::event::ip_address::IpAddress;
 use self::eguard_skel::eguard_bss_types;
 use super::ip_config::IpConfig;
+use crate::event::ip_address::IpAddress;
+use anyhow::Result;
+use libc::{IPPROTO_TCP, IPPROTO_UDP};
+use plain::Plain;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-#[cfg(feature = "debug")]
-use std::fs;
 #[cfg(feature = "debug")]
 use anyhow::anyhow;
-
+#[cfg(feature = "debug")]
+use std::fs;
 
 const MAX_PORT_ARR: usize = 32;
 
+/// Config of the eguard, for now, only tc vec
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     pub tc: Vec<TcPolicy>,
@@ -26,8 +27,8 @@ impl Config {
     #[cfg(feature = "debug")]
     pub fn from_file(path: &str) -> Result<Self> {
         let file = fs::read_to_string(path)?;
-        let config: Config = serde_yaml::from_str(&file)
-            .map_err(|err| anyhow!("failed to parse YAML: {}", err))?;
+        let config: Config =
+            serde_yaml::from_str(&file).map_err(|err| anyhow!("failed to parse YAML: {}", err))?;
         Ok(config)
     }
 }
@@ -54,7 +55,7 @@ pub struct TcPolicy {
     pub ingress: bool,
     pub address: String,
     pub protocol: TcProtocol,
-    pub ports: Option<Vec<String>>,
+    pub ports: Option<Vec<Value>>,
     pub action: TcAction,
     pub level: String,
 }
@@ -93,31 +94,41 @@ impl TcPolicy {
             let mut range_index: usize = 0;
             let mut index: usize = 0;
             for (_, v) in ports.iter().enumerate().take(MAX_PORT_ARR) {
-                if v.contains('-') {
-                    let fields: Vec<&str> = v.split('-').collect();
-                    if fields.len() == 2 {
-                        let start: u16 = match fields[0].parse() {
-                            Ok(s) => s,
-                            _ => continue,
-                        };
-                        let end: u16 = match fields[1].parse() {
-                            Ok(e) => e,
-                            _ => continue,
-                        };
-                        if end >= start {
-                            // notice: little-endian
-                            value.ports_range[2 * range_index] = start;
-                            value.ports_range[2 * range_index + 1] = end;
-                            range_index += 1;
+                match v {
+                    serde_json::Value::Number(num) => {
+                        if let Some(n) = num.as_u64() {
+                            value.ports[index] = (n as u16).to_be();
                         }
                     }
-                } else {
-                    if let Ok(port) = v.parse::<u16>() {
-                        value.ports[index] = port.to_be();
-                        index += 1;
+                    serde_json::Value::String(s) => {
+                        if s.contains('-') {
+                            let fields: Vec<&str> = s.split('-').collect();
+                            if fields.len() == 2 {
+                                let start: u16 = match fields[0].parse() {
+                                    Ok(s) => s,
+                                    _ => continue,
+                                };
+                                let end: u16 = match fields[1].parse() {
+                                    Ok(e) => e,
+                                    _ => continue,
+                                };
+                                if end >= start {
+                                    // notice: little-endian
+                                    value.ports_range[2 * range_index] = start;
+                                    value.ports_range[2 * range_index + 1] = end;
+                                    range_index += 1;
+                                }
+                            }
+                        } else {
+                            if let Ok(port) = s.parse::<u16>() {
+                                value.ports[index] = port.to_be();
+                                index += 1;
+                            }
+                        }
                     }
+                    _ => {}
                 }
-            }            
+            }
         }
 
         // flush to the map
@@ -138,7 +149,10 @@ mod tests {
             ingress: false,
             address: String::from("192.168.0.1/24"),
             protocol: TcProtocol::TCP,
-            ports: Some(vec![String::from("80"), String::from("443")]),
+            ports: Some(vec![
+                serde_json::Value::String(String::from("80")),
+                serde_json::Value::String(String::from("443")),
+            ]),
             action: TcAction::LOG,
             level: String::from("high"),
         };
