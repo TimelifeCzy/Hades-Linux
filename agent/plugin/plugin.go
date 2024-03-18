@@ -1,8 +1,8 @@
 package plugin
 
 import (
-	"agent/agent"
-	"agent/transport"
+	"github.com/chriskaliX/Hades/agent/agent"
+	"github.com/chriskaliX/Hades/agent/transport"
 	"context"
 	"fmt"
 	"sync"
@@ -13,8 +13,8 @@ import (
 
 func Startup(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
-	defer zap.S().Info("plugin deamon exits")
-	zap.S().Info("plugin deamon starts")
+	defer zap.S().Info("[deamon] plugin exits")
+	zap.S().Info("[deamon] plugin starts")
 	for {
 		select {
 		case <-ctx.Done():
@@ -38,10 +38,12 @@ func Startup(ctx context.Context, wg *sync.WaitGroup) {
 				if cfg.Name == agent.Product {
 					continue
 				}
-				if err := PluginManager.Load(ctx, *cfg); err != nil && err != ErrIgnore {
-					zap.S().Errorf("plugin %s load failed: %s", cfg.Name, err.Error())
-				} else {
-					zap.S().Infof("plugin %s is loaded successfully", cfg.Name)
+				if err := PluginManager.Load(ctx, *cfg); err != nil {
+					if err == ErrAlreadyLoad {
+						zap.S().Infof("plugin %s has loaded already", cfg.Name)
+					} else {
+						zap.S().Errorf("plugin %s load failed: %s", cfg.Name, err.Error())
+					}					
 				}
 			}
 			// 移除插件
